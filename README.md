@@ -7,6 +7,11 @@ The ESP32 exposes a **simple HTTP API** over WiFi and electrically **emulates th
   - **`GET /status`** → returns `"1"` if AC is ON, `"0"` if AC is OFF (based on the thermostat LED).
   - **`PUT /on`** → emulates a button press only if AC is currently OFF.
   - **`PUT /off`** → emulates a button press only if AC is currently ON.
+  - **`GET /time`** → returns current system time and sync status (JSON).
+  - **`PUT /synctime`** → manually trigger NTP time synchronization.
+  - **`GET /schedule`** → list all configured schedules (JSON).
+  - **`PUT /schedule`** → create or update a schedule.
+  - **`DELETE /schedule`** → delete a schedule by ID.
 
 The project assumes:
 
@@ -195,6 +200,116 @@ Test from a PC on the same network:
 - `curl http://<esp-ip>/status`
 - `curl -X PUT http://<esp-ip>/on`
 - `curl -X PUT http://<esp-ip>/off`
+
+---
+
+## Time Synchronization and Scheduling
+
+The system includes **NTP time synchronization** and **persistent schedule management** to automatically control the AC at specific times.
+
+### Time Synchronization
+
+- **NTP Server**: `pool.ntp.org`
+- **Timezone**: GMT-5 (Eastern US) – configurable in code
+- **Sync Mode**: Manual only (no automatic re-sync)
+- Initial sync attempted on boot; device continues to work even if sync fails
+
+#### Time API Endpoints
+
+**GET /time** – Get current system time
+
+```bash
+curl http://<esp-ip>/time
+```
+
+Response:
+```json
+{"time": "2025-11-25 14:30:00", "synced": true}
+```
+
+**PUT /synctime** – Manually trigger NTP sync
+
+```bash
+curl -X PUT http://<esp-ip>/synctime
+```
+
+Response:
+```json
+{"status": "syncing"}
+```
+
+### Schedule Management
+
+Up to **16 schedules** (IDs 0-15) are stored persistently in **NVS (Non-Volatile Storage)** and survive ESP32 reboots.
+
+Each schedule specifies:
+- **id**: Schedule slot (0-15)
+- **hour**: Hour of day (0-23)
+- **minute**: Minute of hour (0-59)
+- **switch**: Desired AC state (1 = turn on, 0 = turn off)
+
+The system checks schedules every loop iteration and automatically triggers the AC when the scheduled time is reached.
+
+#### Schedule API Endpoints
+
+**GET /schedule** – List all schedules
+
+```bash
+curl http://<esp-ip>/schedule
+```
+
+Response:
+```json
+[
+  {"id": 0, "hour": 7, "minute": 30, "switch": 1},
+  {"id": 1, "hour": 22, "minute": 0, "switch": 0}
+]
+```
+
+**PUT /schedule** – Create or update a schedule
+
+```bash
+# Turn AC ON at 7:30 AM
+curl -X PUT "http://<esp-ip>/schedule?id=0&hour=7&minute=30&switch=1"
+
+# Turn AC OFF at 10:00 PM (22:00)
+curl -X PUT "http://<esp-ip>/schedule?id=1&hour=22&minute=0&switch=0"
+```
+
+Response:
+```json
+{"status": "ok", "id": 0}
+```
+
+**DELETE /schedule** – Delete a schedule
+
+```bash
+curl -X DELETE "http://<esp-ip>/schedule?id=0"
+```
+
+Response:
+```json
+{"status": "deleted", "id": 0}
+```
+
+#### Parameter Validation
+
+- **id**: Must be 0-15
+- **hour**: Must be 0-23 (24-hour format)
+- **minute**: Must be 0-59
+- **switch**: Must be 0 (off) or 1 (on)
+
+Invalid parameters return HTTP 400 with error details in JSON.
+
+### Schedule Behavior
+
+- Schedules are checked every loop iteration (≈2ms)
+- When a schedule time is reached, the system:
+  1. Checks current AC state
+  2. If AC is already in desired state, no action is taken
+  3. If AC needs to change state, a button press is emulated
+- Each schedule triggers only once per minute (prevents duplicate execution)
+- Schedules persist through reboots via NVS storage
 
 ---
 
