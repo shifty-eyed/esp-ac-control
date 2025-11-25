@@ -34,7 +34,6 @@ struct Schedule {
   bool valid;       // true if schedule slot is populated
 };
 
-// Global variables for schedules
 Schedule schedules[16];
 Preferences preferences;
 
@@ -51,9 +50,7 @@ const int BUTTON_PRESS_DURATION = 300;
 WebServer server(HTTP_PORT);
 
 bool isAcOn() {
-  const int samples = 8;
-  
-  for (int i = 0; i < samples; i++) {
+  for (int i = 0; i < 5; i++) {
     if (digitalRead(LED_SENSE_PIN) == HIGH) {
       return true;
     }
@@ -62,13 +59,23 @@ bool isAcOn() {
   return false;
 }
 
-void pressButton() {
-  Serial.println("[HW] Pressing button...");
-  digitalWrite(BUTTON_PIN, HIGH);
-  delay(BUTTON_PRESS_DURATION);
-  digitalWrite(BUTTON_PIN, LOW);
-  Serial.println("[HW] Button released");
-  delay(100);
+bool setOn(bool desiredState) {
+  int attempts = 4;
+  
+  while (attempts--) {
+    if (isAcOn() == desiredState) {
+      return true;
+    }
+
+    Serial.println("[HW] Pressing button...");
+    digitalWrite(BUTTON_PIN, HIGH);
+    delay(BUTTON_PRESS_DURATION);
+    digitalWrite(BUTTON_PIN, LOW);
+    Serial.println("[HW] Button released");
+    delay(1000);
+  }
+  
+  return false;
 }
 
 // ========== NVS Schedule Storage Functions ==========
@@ -249,19 +256,10 @@ void checkSchedules() {
       if (currentMinute < 10) Serial.print("0");
       Serial.println(currentMinute);
       
-      bool currentState = isAcOn();
       bool desiredState = (schedules[i].switchState == 1);
-      
-      if (desiredState && !currentState) {
-        Serial.println("[SCHEDULE] Turning AC ON");
-        pressButton();
-      } else if (!desiredState && currentState) {
-        Serial.println("[SCHEDULE] Turning AC OFF");
-        pressButton();
-      } else {
-        Serial.print("[SCHEDULE] AC already in desired state: ");
-        Serial.println(desiredState ? "ON" : "OFF");
-      }
+      Serial.print("[SCHEDULE] Setting AC to ");
+      Serial.println(desiredState ? "ON" : "OFF");
+      setOn(desiredState);
     }
     
     // Reset executed flag when minute changes
@@ -300,45 +298,23 @@ String schedulesToJson() {
 
 void handleStatus() {
   bool acOn = isAcOn();
-  String response = acOn ? "1\n" : "0\n";
-  
-  Serial.print("[HTTP] GET /status → ");
-  Serial.println(response);
-  
+  String response = "{\"status\": \"" + (acOn ? "1" : "0") + "\"}\n";
   server.send(200, "text/plain", response);
 }
 
 void handleOn() {
-  Serial.println("[HTTP] PUT /on");
-  
-  if (isAcOn()) {
-    server.send(200, "text/plain", "OK - Already on\n");
+  if (setOn(true)) {
+    server.send(200, "text/plain", "OK - Turned on\n");
   } else {
-    pressButton();
-    delay(500);
-    
-    if (isAcOn()) {
-      server.send(200, "text/plain", "OK - Turned on\n");
-    } else {
-      Serial.println("[HTTP] Warning: AC may not have turned ON");
-      server.send(200, "text/plain", "OK - Failed to turn on\n");
-    }
+    server.send(200, "text/plain", "Failed to turn on\n");
   }
 }
 
 void handleOff() {
-  Serial.println("[HTTP] PUT /off");
-  
-  if (!isAcOn()) {
-    server.send(200, "text/plain", "OK - Already off");
+  if (setOn(false)) {
+    server.send(200, "text/plain", "OK - Turned off\n");
   } else {
-    pressButton();
-    delay(500);
-    if (!isAcOn()) {
-      server.send(200, "text/plain", "OK - Turned off");
-    } else {
-      server.send(200, "text/plain", "OK - Failed to turn off");
-    }
+    server.send(200, "text/plain", "Failed to turn off\n");
   }
 }
 
@@ -360,37 +336,30 @@ void handleNotFound() {
 // ========== New HTTP Endpoint Handlers ==========
 
 void handleGetTime() {
-  Serial.println("[HTTP] GET /time");
   String response = getCurrentTimeString();
   server.send(200, "application/json", response);
 }
 
 void handleSyncTime() {
-  Serial.println("[HTTP] PUT /synctime");
-  
   if (WiFi.status() != WL_CONNECTED) {
-    server.send(503, "application/json", "{\"error\": \"WiFi not connected\"}");
+    server.send(503, "application/json", "{\"error\": \"WiFi not connected\"}\n");
     return;
   }
   
   manualSyncTime();
-  server.send(200, "application/json", "{\"status\": \"syncing\"}");
+  server.send(200, "application/json", "{\"status\": \"syncing\"}\n");
 }
 
 void handleGetSchedule() {
-  Serial.println("[HTTP] GET /schedule");
   String response = schedulesToJson();
   server.send(200, "application/json", response);
 }
 
 void handlePutSchedule() {
-  Serial.println("[HTTP] PUT /schedule");
-  
-  // Parse query parameters
   if (!server.hasArg("id") || !server.hasArg("hour") || 
       !server.hasArg("minute") || !server.hasArg("switch")) {
     server.send(400, "application/json", 
-                "{\"error\": \"Missing parameters. Required: id, hour, minute, switch\"}");
+                "{\"error\": \"Missing parameters. Required: id, hour, minute, switch\"}\n");
     return;
   }
   
@@ -399,25 +368,23 @@ void handlePutSchedule() {
   int minute = server.arg("minute").toInt();
   int switchState = server.arg("switch").toInt();
   
-  // Validate parameters
   if (id < 0 || id >= 16) {
-    server.send(400, "application/json", "{\"error\": \"id must be 0-15\"}");
+    server.send(400, "application/json", "{\"error\": \"id must be 0-15\"}\n");
     return;
   }
   if (hour < 0 || hour > 23) {
-    server.send(400, "application/json", "{\"error\": \"hour must be 0-23\"}");
+    server.send(400, "application/json", "{\"error\": \"hour must be 0-23\"}\n");
     return;
   }
   if (minute < 0 || minute > 59) {
-    server.send(400, "application/json", "{\"error\": \"minute must be 0-59\"}");
+    server.send(400, "application/json", "{\"error\": \"minute must be 0-59\"}\n");
     return;
   }
   if (switchState != 0 && switchState != 1) {
-    server.send(400, "application/json", "{\"error\": \"switch must be 0 or 1\"}");
+    server.send(400, "application/json", "{\"error\": \"switch must be 0 or 1\"}\n");
     return;
   }
   
-  // Update schedule
   schedules[id].id = id;
   schedules[id].hour = hour;
   schedules[id].minute = minute;
@@ -425,54 +392,38 @@ void handlePutSchedule() {
   schedules[id].executed = false;
   schedules[id].valid = true;
   
-  // Save to NVS
   saveScheduleToNVS(id);
-  
-  Serial.print("[HTTP] Created/updated schedule ");
-  Serial.print(id);
-  Serial.print(": ");
-  Serial.print(hour);
-  Serial.print(":");
-  if (minute < 10) Serial.print("0");
-  Serial.print(minute);
-  Serial.print(" switch=");
-  Serial.println(switchState);
   
   String response = "{\"status\": \"ok\", \"id\": ";
   response += id;
-  response += "}";
+  response += "}\n";
   
   server.send(200, "application/json", response);
 }
 
 void handleDeleteSchedule() {
-  Serial.println("[HTTP] DELETE /schedule");
-  
   if (!server.hasArg("id")) {
-    server.send(400, "application/json", "{\"error\": \"Missing id parameter\"}");
+    server.send(400, "application/json", "{\"error\": \"Missing id parameter\"}\n");
     return;
   }
   
   int id = server.arg("id").toInt();
   
   if (id < 0 || id >= 16) {
-    server.send(400, "application/json", "{\"error\": \"id must be 0-15\"}");
+    server.send(400, "application/json", "{\"error\": \"id must be 0-15\"}\n");
     return;
   }
   
   if (!schedules[id].valid) {
-    server.send(404, "application/json", "{\"error\": \"Schedule not found\"}");
+    server.send(404, "application/json", "{\"error\": \"Schedule not found\"}\n");
     return;
   }
   
   deleteScheduleFromNVS(id);
   
-  Serial.print("[HTTP] Deleted schedule ");
-  Serial.println(id);
-  
   String response = "{\"status\": \"deleted\", \"id\": ";
   response += id;
-  response += "}";
+  response += "}\n";
   
   server.send(200, "application/json", response);
 }
@@ -486,16 +437,7 @@ void setup() {
   
   pinMode(LED_SENSE_PIN, INPUT);
   
-  bool initialState = isAcOn();
-  Serial.print("[HW] Initial AC state: ");
-  Serial.println(initialState ? "ON" : "OFF");
-  
-  // Load schedules from NVS
   loadSchedulesFromNVS();
-  
-  // Connect to WiFi
-  Serial.print("[WiFi] Connecting to: ");
-  Serial.println(WIFI_SSID);
   
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -519,14 +461,9 @@ void setup() {
   Serial.println("[WiFi] Connected!");
   Serial.print("[WiFi] IP address: ");
   Serial.println(WiFi.localIP());
-  Serial.print("[WiFi] Signal strength (RSSI): ");
-  Serial.print(WiFi.RSSI());
-  Serial.println(" dBm");
   
-  // Initialize time synchronization
   initTime();
   
-  // Configure HTTP server routes
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/on", HTTP_PUT, handleOn);      
   server.on("/off", HTTP_PUT, handleOff);
@@ -537,27 +474,15 @@ void setup() {
   server.on("/schedule", HTTP_DELETE, handleDeleteSchedule);
   server.onNotFound(handleNotFound);
   
-  // Start HTTP server
   server.begin();
   Serial.println();
   Serial.print("[HTTP] Server started on port ");
   Serial.println(HTTP_PORT);
   Serial.println();
-  Serial.println("Ready! Test with:");
-  Serial.print("  curl http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/status");
-  Serial.print("  curl -X PUT http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/on");
-  Serial.print("  curl -X PUT http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("/off");
-  Serial.println();
 }
 
 void loop() {
   server.handleClient();
-  checkSchedules();  // Check if any schedules need to be triggered
+  checkSchedules();
   delay(2);
 }
