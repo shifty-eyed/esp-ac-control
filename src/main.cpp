@@ -74,7 +74,7 @@ String setOn(bool desiredState) {
   const int maxAttempts = 4;
   for (int attempt = 0; attempt < maxAttempts; attempt++) {
     if (isAcOn() == desiredState) {
-      return attempt == 0 ? "Already there" : "Success from attempt " + String(attempt);
+      return attempt == 0 ? "Already there\n" : "Success from " + String(attempt) + " retry\n";
     }
 
     digitalWrite(BUTTON_PIN, HIGH);
@@ -86,7 +86,7 @@ String setOn(bool desiredState) {
     }
   }
   
-  return "Failed after " + String(maxAttempts);
+  return "Failed after " + String(maxAttempts) + " retries\n";
 }
 
 // ========== NVS Schedule Storage Functions ==========
@@ -237,17 +237,7 @@ void checkSchedules() {
       
       schedules[i].executed = true;
       
-      Serial.print("[SCHEDULE] Triggered schedule ");
-      Serial.print(i);
-      Serial.print(" at ");
-      Serial.print(currentHour);
-      Serial.print(":");
-      if (currentMinute < 10) Serial.print("0");
-      Serial.println(currentMinute);
-      
       bool desiredState = (schedules[i].switchState == 1);
-      Serial.print("[SCHEDULE] Setting AC to ");
-      Serial.println(desiredState ? "ON" : "OFF");
       setOn(desiredState);
     }
     
@@ -292,19 +282,13 @@ void handleStatus() {
 }
 
 void handleOn() {
-  if (setOn(true, 1)) {
-    server.send(200, "text/plain", "OK - Turned on\n");
-  } else {
-    server.send(200, "text/plain", "Failed to turn on\n");
-  }
+  String result = setOn(true);
+  server.send(200, "text/plain", result);
 }
 
 void handleOff() {
-  if (setOn(false, 1)) {
-    server.send(200, "text/plain", "OK - Turned off\n");
-  } else {
-    server.send(200, "text/plain", "Failed to turn off\n");
-  }
+  String result = setOn(false);
+  server.send(200, "text/plain", result);
 }
 
 void handleNotFound() {
