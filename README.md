@@ -270,10 +270,13 @@ Response:
 
 ```bash
 # Turn AC ON at 7:30 AM
-curl -X PUT "http://<esp-ip>/schedule?id=0&hour=7&minute=30&switch=1"
+curl -X PUT "http://192.168.4.120/schedule?id=0&hour=7&minute=30&switch=1"
 
 # Turn AC OFF at 10:00 PM (22:00)
-curl -X PUT "http://<esp-ip>/schedule?id=1&hour=22&minute=0&switch=0"
+curl -X PUT "http://192.168.4.120/schedule?id=1&hour=22&minute=0&switch=0"
+
+
+
 ```
 
 Response:

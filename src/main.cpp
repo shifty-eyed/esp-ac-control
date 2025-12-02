@@ -2,9 +2,10 @@
  * ESP32 AC Control - WiFi HTTP API for Thermostat Interface
  * 
  * Hardware connections:
- *   - GPIO25: Button emulation (drives NPN transistor base via 4.7kΩ)
+ *   - GPIO25: Relay control (ACTIVE LOW - LOW=ON, HIGH=OFF)
  *   - GPIO32: LED sense input (digital read, 3V when AC on, 0V when off)
- *   - GND: Shared between ESP32 and thermostat
+ *   - VIN: Relay module power
+ *   - GND: Shared ground
  * 
  * HTTP API:
  *   GET  /status  → returns "1" (AC on) or "0" (AC off)
@@ -49,9 +50,12 @@ const int BUTTON_PRESS_DURATION = 300;
 
 WebServer server(HTTP_PORT);
 
+//
+//curl -X PUT "http://192.168.4.120/schedule?id=1&hour=7&minute=0&switch=0"
+
 bool isAcOn() {
   for (int i = 0; i < 5; i++) {
-    if (digitalRead(LED_SENSE_PIN) == HIGH) {
+    if (digitalRead(LED_SENSE_PIN) == LOW) {
       return true;
     }
     delay(5);
@@ -59,23 +63,30 @@ bool isAcOn() {
   return false;
 }
 
-bool setOn(bool desiredState) {
-  int attempts = 4;
+void initGPIO() {
+  pinMode(BUTTON_PIN, OUTPUT);
+  digitalWrite(BUTTON_PIN, LOW); 
+  pinMode(LED_SENSE_PIN, INPUT_PULLUP);
   
-  while (attempts--) {
+}
+
+String setOn(bool desiredState) {
+  const int maxAttempts = 4;
+  for (int attempt = 0; attempt < maxAttempts; attempt++) {
     if (isAcOn() == desiredState) {
-      return true;
+      return attempt == 0 ? "Already there" : "Success from attempt " + String(attempt);
     }
 
-    Serial.println("[HW] Pressing button...");
     digitalWrite(BUTTON_PIN, HIGH);
     delay(BUTTON_PRESS_DURATION);
     digitalWrite(BUTTON_PIN, LOW);
-    Serial.println("[HW] Button released");
-    delay(1000);
+    delay(500);
+    if (isAcOn() != desiredState) {
+      delay(1500);
+    }
   }
   
-  return false;
+  return "Failed after " + String(maxAttempts);
 }
 
 // ========== NVS Schedule Storage Functions ==========
@@ -173,28 +184,6 @@ void initTime() {
   
   // Configure time with NTP server
   configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
-  
-  // Try to sync, but don't block if it fails
-  Serial.print("[TIME] Attempting initial sync");
-  struct tm timeinfo;
-  int attempts = 0;
-  while (!getLocalTime(&timeinfo) && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  
-  if (attempts < 20) {
-    Serial.println();
-    Serial.println("[TIME] Time synchronized!");
-    char timeStr[64];
-    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
-    Serial.print("[TIME] Current time: ");
-    Serial.println(timeStr);
-  } else {
-    Serial.println();
-    Serial.println("[TIME] WARNING: Initial sync failed (AC control will still work)");
-  }
 }
 
 void manualSyncTime() {
@@ -298,12 +287,12 @@ String schedulesToJson() {
 
 void handleStatus() {
   bool acOn = isAcOn();
-  String response = "{\"status\": \"" + (acOn ? "1" : "0") + "\"}\n";
+  String response = "{\"status\": \"" + String(acOn ? "1" : "0") + "\"}\n";
   server.send(200, "text/plain", response);
 }
 
 void handleOn() {
-  if (setOn(true)) {
+  if (setOn(true, 1)) {
     server.send(200, "text/plain", "OK - Turned on\n");
   } else {
     server.send(200, "text/plain", "Failed to turn on\n");
@@ -311,7 +300,7 @@ void handleOn() {
 }
 
 void handleOff() {
-  if (setOn(false)) {
+  if (setOn(false, 1)) {
     server.send(200, "text/plain", "OK - Turned off\n");
   } else {
     server.send(200, "text/plain", "Failed to turn off\n");
@@ -432,10 +421,7 @@ void setup() {
   Serial.begin(9600);
   delay(100);
   
-  pinMode(BUTTON_PIN, OUTPUT);
-  digitalWrite(BUTTON_PIN, LOW);
-  
-  pinMode(LED_SENSE_PIN, INPUT);
+  initGPIO();
   
   loadSchedulesFromNVS();
   
