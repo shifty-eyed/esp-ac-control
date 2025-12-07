@@ -71,7 +71,7 @@ void initGPIO() {
 }
 
 String setOn(bool desiredState) {
-  const int maxAttempts = 4;
+  const int maxAttempts = 5;
   for (int attempt = 0; attempt < maxAttempts; attempt++) {
     if (isAcOn() == desiredState) {
       return attempt == 0 ? "Already there\n" : "Success from " + String(attempt) + " retry\n";
@@ -221,7 +221,7 @@ bool isScheduleValid(int id) {
 void checkSchedules() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
-    return;  // Time not available yet
+    return;
   }
   
   int currentHour = timeinfo.tm_hour;
@@ -236,9 +236,7 @@ void checkSchedules() {
         !schedules[i].executed) {
       
       schedules[i].executed = true;
-      
-      bool desiredState = (schedules[i].switchState == 1);
-      setOn(desiredState);
+      setOn(schedules[i].switchState == 1);
     }
     
     // Reset executed flag when minute changes
@@ -402,7 +400,7 @@ void handleDeleteSchedule() {
 }
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   delay(100);
   
   initGPIO();
@@ -454,5 +452,5 @@ void setup() {
 void loop() {
   server.handleClient();
   checkSchedules();
-  delay(2);
+  delay(20);
 }
