@@ -38,6 +38,12 @@ struct Schedule {
 Schedule schedules[16];
 Preferences preferences;
 
+// Journal (in-memory log)
+const int JOURNAL_MAX_LINES = 300;
+String journal[JOURNAL_MAX_LINES];
+int journalCount = 0;
+int journalIndex = 0;  // Circular buffer index
+
 const char* WIFI_SSID     = "imenilenina-bistro";
 const char* WIFI_PASSWORD = "10101010";
 
@@ -61,6 +67,36 @@ bool isAcOn() {
     delay(5);
   }
   return false;
+}
+
+// ========== Journal Functions ==========
+
+void addToJournal(String message) {
+  struct tm timeinfo;
+  String timestamp;
+
+  if (getLocalTime(&timeinfo)) {
+    char timeStr[20];
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    timestamp = String(timeStr);
+  } else {
+    timestamp = "NO-TIME";
+  }
+
+  journal[journalIndex] = "[" + timestamp + "] " + message;
+  journalIndex = (journalIndex + 1) % JOURNAL_MAX_LINES;
+
+  if (journalCount < JOURNAL_MAX_LINES) {
+    journalCount++;
+  }
+
+  Serial.println("[JOURNAL] " + message);
+}
+
+void clearJournal() {
+  journalCount = 0;
+  journalIndex = 0;
+  Serial.println("[JOURNAL] Cleared");
 }
 
 void initGPIO() {
@@ -191,25 +227,6 @@ void manualSyncTime() {
   sntp_restart();
 }
 
-String getCurrentTimeString() {
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    return "{\"error\": \"Time not available\"}";
-  }
-  
-  char timeStr[64];
-  strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
-  
-  bool synced = (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED);
-  
-  String json = "{\"time\": \"";
-  json += timeStr;
-  json += "\", \"synced\": ";
-  json += synced ? "true" : "false";
-  json += "}";
-  
-  return json;
-}
 
 // ========== Schedule Management Functions ==========
 
@@ -223,22 +240,28 @@ void checkSchedules() {
   if (!getLocalTime(&timeinfo)) {
     return;
   }
-  
+
   int currentHour = timeinfo.tm_hour;
   int currentMinute = timeinfo.tm_min;
-  
+
   for (int i = 0; i < 16; i++) {
     if (!schedules[i].valid) continue;
-    
+
     // Check if current time matches schedule
-    if (schedules[i].hour == currentHour && 
+    if (schedules[i].hour == currentHour &&
         schedules[i].minute == currentMinute &&
         !schedules[i].executed) {
-      
+
       schedules[i].executed = true;
-      setOn(schedules[i].switchState == 1);
+
+      String action = (schedules[i].switchState == 1) ? "ON" : "OFF";
+      String logMsg = "Schedule #" + String(i) + " triggered: Turn " + action;
+      addToJournal(logMsg);
+
+      String result = setOn(schedules[i].switchState == 1);
+      addToJournal("Schedule #" + String(i) + " result: " + result);
     }
-    
+
     // Reset executed flag when minute changes
     if (schedules[i].minute != currentMinute) {
       schedules[i].executed = false;
@@ -246,46 +269,67 @@ void checkSchedules() {
   }
 }
 
-String schedulesToJson() {
-  String json = "[";
-  bool first = true;
-  
-  for (int i = 0; i < 16; i++) {
-    if (schedules[i].valid) {
-      if (!first) {
-        json += ",";
-      }
-      first = false;
-      
-      json += "{\"id\":";
-      json += i;
-      json += ",\"hour\":";
-      json += schedules[i].hour;
-      json += ",\"minute\":";
-      json += schedules[i].minute;
-      json += ",\"switch\":";
-      json += schedules[i].switchState;
-      json += "}";
-    }
-  }
-  
-  json += "]";
-  return json;
-}
 
 void handleStatus() {
   bool acOn = isAcOn();
-  String response = "{\"status\": \"" + String(acOn ? "1" : "0") + "\"}\n";
-  server.send(200, "text/plain", response);
+
+  // Build combined JSON response
+  String response = "{";
+
+  // 1. AC Status
+  response += "\"status\":\"";
+  response += acOn ? "1" : "0";
+  response += "\",";
+
+  // 2. Time Info
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    char timeStr[64];
+    strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+
+    response += "\"time\":\"";
+    response += timeStr;
+    response += "\",";
+  } else {
+    response += "\"time\":null,";
+  }
+
+  // 3. Schedules
+  response += "\"schedules\":[";
+  bool first = true;
+  for (int i = 0; i < 16; i++) {
+    if (schedules[i].valid) {
+      if (!first) response += ",";
+      first = false;
+
+      response += "{\"id\":";
+      response += i;
+      response += ",\"hour\":";
+      response += schedules[i].hour;
+      response += ",\"minute\":";
+      response += schedules[i].minute;
+      response += ",\"switch\":";
+      response += schedules[i].switchState;
+      response += "}";
+    }
+  }
+  response += "]";
+  response += "}\n";
+
+  server.send(200, "application/json", response);
 }
 
 void handleOn() {
+  addToJournal("Manual turn ON requested");
   String result = setOn(true);
+  addToJournal("Manual turn ON result: " + result);
   server.send(200, "text/plain", result);
 }
 
 void handleOff() {
+  addToJournal("Manual turn OFF requested");
   String result = setOn(false);
+  addToJournal("Manual turn OFF result: " + result);
   server.send(200, "text/plain", result);
 }
 
@@ -295,20 +339,39 @@ void handleNotFound() {
   message += "  GET  /status\n";
   message += "  PUT  /on\n";
   message += "  PUT  /off\n";
-  message += "  GET  /time\n";
   message += "  PUT  /synctime\n";
-  message += "  GET  /schedule\n";
   message += "  PUT  /schedule?id=X&hour=H&minute=M&switch=S\n";
   message += "  DELETE /schedule?id=X\n";
-  
+  message += "  GET  /journal\n";
+  message += "  DELETE /journal\n";
+
   server.send(404, "text/plain", message);
 }
 
 // ========== New HTTP Endpoint Handlers ==========
 
-void handleGetTime() {
-  String response = getCurrentTimeString();
+void handleGetJournal() {
+  String response = "[";
+
+  // Read journal in chronological order (oldest to newest)
+  int startIdx = (journalCount < JOURNAL_MAX_LINES) ? 0 : journalIndex;
+
+  for (int i = 0; i < journalCount; i++) {
+    int idx = (startIdx + i) % JOURNAL_MAX_LINES;
+
+    if (i > 0) response += ",";
+    response += "\"";
+    response += journal[idx];
+    response += "\"";
+  }
+
+  response += "]\n";
   server.send(200, "application/json", response);
+}
+
+void handleDeleteJournal() {
+  clearJournal();
+  server.send(200, "application/json", "{\"status\": \"cleared\"}\n");
 }
 
 void handleSyncTime() {
@@ -316,14 +379,9 @@ void handleSyncTime() {
     server.send(503, "application/json", "{\"error\": \"WiFi not connected\"}\n");
     return;
   }
-  
+
   manualSyncTime();
   server.send(200, "application/json", "{\"status\": \"syncing\"}\n");
-}
-
-void handleGetSchedule() {
-  String response = schedulesToJson();
-  server.send(200, "application/json", response);
 }
 
 void handlePutSchedule() {
@@ -433,13 +491,13 @@ void setup() {
   initTime();
   
   server.on("/status", HTTP_GET, handleStatus);
-  server.on("/on", HTTP_PUT, handleOn);      
+  server.on("/on", HTTP_PUT, handleOn);
   server.on("/off", HTTP_PUT, handleOff);
-  server.on("/time", HTTP_GET, handleGetTime);
   server.on("/synctime", HTTP_PUT, handleSyncTime);
-  server.on("/schedule", HTTP_GET, handleGetSchedule);
   server.on("/schedule", HTTP_PUT, handlePutSchedule);
   server.on("/schedule", HTTP_DELETE, handleDeleteSchedule);
+  server.on("/journal", HTTP_GET, handleGetJournal);
+  server.on("/journal", HTTP_DELETE, handleDeleteJournal);
   server.onNotFound(handleNotFound);
   
   server.begin();
