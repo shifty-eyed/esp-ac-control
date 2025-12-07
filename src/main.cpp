@@ -351,22 +351,16 @@ void handleNotFound() {
 // ========== New HTTP Endpoint Handlers ==========
 
 void handleGetJournal() {
-  String response = "[";
+  String response = "";
 
-  // Read journal in chronological order (oldest to newest)
   int startIdx = (journalCount < JOURNAL_MAX_LINES) ? 0 : journalIndex;
 
   for (int i = 0; i < journalCount; i++) {
     int idx = (startIdx + i) % JOURNAL_MAX_LINES;
-
-    if (i > 0) response += ",";
-    response += "\"";
     response += journal[idx];
-    response += "\"";
+    response += "\n";
   }
-
-  response += "]\n";
-  server.send(200, "application/json", response);
+  server.send(200, "text/plain", response);
 }
 
 void handleDeleteJournal() {
