@@ -16,6 +16,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <HTTPClient.h>
 #include <time.h>
 #include <esp_sntp.h>
 #include <Preferences.h>
@@ -37,6 +38,7 @@ struct Schedule {
 
 Schedule schedules[16];
 Preferences preferences;
+String haWebhookUrl = "";
 
 // Journal (in-memory log)
 const int JOURNAL_MAX_LINES = 300;
@@ -106,11 +108,41 @@ void initGPIO() {
   
 }
 
+void sendHomeAssistantWebhook(bool acState) {
+  if (haWebhookUrl == "" || haWebhookUrl.length() == 0) {
+    return;
+  }
+
+  HTTPClient http;
+  http.begin(haWebhookUrl);
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(5000);
+
+  String payload = "{\"status\":\"" + String(acState ? "on" : "off") + "\"}";
+
+  int httpCode = http.POST(payload);
+
+  String logMsg = "HA webhook: " + String(acState ? "on" : "off");
+  if (httpCode > 0) {
+    logMsg += " -> HTTP " + String(httpCode);
+  } else {
+    logMsg += " -> FAILED: " + http.errorToString(httpCode);
+  }
+  addToJournal(logMsg);
+
+  http.end();
+}
+
 String setOn(bool desiredState) {
   const int maxAttempts = 5;
   for (int attempt = 0; attempt < maxAttempts; attempt++) {
     if (isAcOn() == desiredState) {
-      return attempt == 0 ? "Already there\n" : "Success from " + String(attempt) + " retry\n";
+      if (attempt == 0) {
+        return "Already there\n";
+      } else {
+        sendHomeAssistantWebhook(desiredState);
+        return "Success from " + String(attempt) + " retry\n";
+      }
     }
 
     digitalWrite(BUTTON_PIN, HIGH);
@@ -121,7 +153,7 @@ String setOn(bool desiredState) {
       delay(1500);
     }
   }
-  
+
   return "Failed after " + String(maxAttempts) + " retries\n";
 }
 
@@ -172,6 +204,17 @@ void loadSchedulesFromNVS() {
   preferences.end();
 }
 
+void loadWebhookUrlFromNVS() {
+  preferences.begin("config", false);
+  haWebhookUrl = preferences.getString("ha_webhook", "");
+  preferences.end();
+
+  if (haWebhookUrl.length() > 0) {
+    Serial.print("[NVS] Loaded webhook URL: ");
+    Serial.println(haWebhookUrl);
+  }
+}
+
 void saveScheduleToNVS(int id) {
   if (id < 0 || id >= 16) return;
   
@@ -208,6 +251,16 @@ void deleteScheduleFromNVS(int id) {
   
   schedules[id].valid = false;
   schedules[id].executed = false;
+}
+
+void saveWebhookUrlToNVS(String url) {
+  preferences.begin("config", false);
+  preferences.putString("ha_webhook", url);
+  preferences.end();
+  haWebhookUrl = url;
+
+  Serial.print("[NVS] Saved webhook URL: ");
+  Serial.println(url);
 }
 
 // ========== Time Synchronization Functions ==========
@@ -313,7 +366,8 @@ void handleStatus() {
       response += "}";
     }
   }
-  response += "]";
+  response += "],";
+  response += "\"ha_webhook\":\"" + haWebhookUrl + "\"";
   response += "}\n";
 
   server.send(200, "application/json", response);
@@ -331,6 +385,19 @@ void handleOff() {
   String result = setOn(false);
   addToJournal("Manual turn OFF result: " + result);
   server.send(200, "text/plain", result);
+}
+
+void handleSetWebhook() {
+  if (!server.hasArg("value")) {
+    server.send(400, "text/plain", "Missing 'value' parameter\n");
+    return;
+  }
+
+  String url = server.arg("value");
+  saveWebhookUrlToNVS(url);
+  addToJournal("HA webhook URL updated");
+
+  server.send(200, "text/plain", "Webhook URL updated: " + url + "\n");
 }
 
 void handleNotFound() {
@@ -456,8 +523,9 @@ void setup() {
   delay(100);
   
   initGPIO();
-  
+
   loadSchedulesFromNVS();
+  loadWebhookUrlFromNVS();
   
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -487,6 +555,7 @@ void setup() {
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/on", HTTP_PUT, handleOn);
   server.on("/off", HTTP_PUT, handleOff);
+  server.on("/ha-hook-url", HTTP_PUT, handleSetWebhook);
   server.on("/synctime", HTTP_PUT, handleSyncTime);
   server.on("/schedule", HTTP_PUT, handlePutSchedule);
   server.on("/schedule", HTTP_DELETE, handleDeleteSchedule);
@@ -506,3 +575,6 @@ void loop() {
   checkSchedules();
   delay(20);
 }
+
+//http://192.168.4.199:8123/api/webhook/ac_status_main
+//curl -X PUT "http://192.168.4.120/ha-hook-url?value=http://192.168.4.199:8123/api/webhook/ac_status_main"
