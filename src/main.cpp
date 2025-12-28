@@ -40,11 +40,24 @@ Schedule schedules[16];
 Preferences preferences;
 String haWebhookUrl = "";
 
+bool lastKnownAcState = false;
+unsigned long lastStateCheckMillis = 0;
+const unsigned long STATE_CHECK_INTERVAL = 500;
+
 // Journal (in-memory log)
-const int JOURNAL_MAX_LINES = 300;
+const int JOURNAL_MAX_LINES = 200;
 String journal[JOURNAL_MAX_LINES];
 int journalCount = 0;
 int journalIndex = 0;  // Circular buffer index
+
+struct StateChangeRecord {
+  unsigned long timestamp;
+  bool state;
+};
+
+const int STATE_JOURNAL_MAX_RECORDS = 3000;
+StateChangeRecord stateJournal[STATE_JOURNAL_MAX_RECORDS];
+int stateJournalCount = 0;
 
 const char* WIFI_SSID     = "imenilenina-bistro";
 const char* WIFI_PASSWORD = "10101010";
@@ -57,9 +70,6 @@ const int LED_SENSE_PIN = 32;
 const int BUTTON_PRESS_DURATION = 300;
 
 WebServer server(HTTP_PORT);
-
-//
-//curl -X PUT "http://192.168.4.120/schedule?id=1&hour=7&minute=0&switch=0"
 
 bool isAcOn() {
   for (int i = 0; i < 5; i++) {
@@ -101,6 +111,25 @@ void clearJournal() {
   Serial.println("[JOURNAL] Cleared");
 }
 
+void addToStateJournal(bool state) {
+  struct tm timeinfo;
+  unsigned long timestamp = 0;
+
+  if (getLocalTime(&timeinfo)) {
+    timestamp = mktime(&timeinfo);
+  }
+
+  stateJournal[stateJournalCount].timestamp = timestamp;
+  stateJournal[stateJournalCount].state = state;
+  if (stateJournalCount < STATE_JOURNAL_MAX_RECORDS - 1) {
+    stateJournalCount++;
+  }
+}
+
+void clearStateJournal() {
+  stateJournalCount = 0;
+}
+
 void initGPIO() {
   pinMode(BUTTON_PIN, OUTPUT);
   digitalWrite(BUTTON_PIN, LOW); 
@@ -140,7 +169,6 @@ String setOn(bool desiredState) {
       if (attempt == 0) {
         return "Already there\n";
       } else {
-        sendHomeAssistantWebhook(desiredState);
         return "Success from " + String(attempt) + " retry\n";
       }
     }
@@ -288,6 +316,23 @@ bool isScheduleValid(int id) {
   return schedules[id].valid;
 }
 
+void checkForExternalStateChange() {
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - lastStateCheckMillis >= STATE_CHECK_INTERVAL) {
+    lastStateCheckMillis = currentMillis;
+
+    bool currentAcState = isAcOn();
+
+    if (currentAcState != lastKnownAcState) {
+      lastKnownAcState = currentAcState;
+      addToStateJournal(currentAcState);
+
+      sendHomeAssistantWebhook(currentAcState);
+    }
+  }
+}
+
 void checkSchedules() {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
@@ -411,6 +456,8 @@ void handleNotFound() {
   message += "  DELETE /schedule?id=X\n";
   message += "  GET  /journal\n";
   message += "  DELETE /journal\n";
+  message += "  GET  /state-journal\n";
+  message += "  DELETE /state-journal\n";
 
   server.send(404, "text/plain", message);
 }
@@ -432,6 +479,24 @@ void handleGetJournal() {
 
 void handleDeleteJournal() {
   clearJournal();
+  server.send(200, "application/json", "{\"status\": \"cleared\"}\n");
+}
+
+void handleGetStateJournal() {
+  String response = "";
+
+  for (int i = 0; i < stateJournalCount; i++) {
+    response += stateJournal[i].timestamp;
+    response += ",";
+    response += stateJournal[i].state ? "1" : "0";
+    response += "\n";
+  }
+
+  server.send(200, "text/plain", response);
+}
+
+void handleDeleteStateJournal() {
+  clearStateJournal();
   server.send(200, "application/json", "{\"status\": \"cleared\"}\n");
 }
 
@@ -561,6 +626,8 @@ void setup() {
   server.on("/schedule", HTTP_DELETE, handleDeleteSchedule);
   server.on("/journal", HTTP_GET, handleGetJournal);
   server.on("/journal", HTTP_DELETE, handleDeleteJournal);
+  server.on("/state-journal", HTTP_GET, handleGetStateJournal);
+  server.on("/state-journal", HTTP_DELETE, handleDeleteStateJournal);
   server.onNotFound(handleNotFound);
   
   server.begin();
@@ -568,13 +635,21 @@ void setup() {
   Serial.print("[HTTP] Server started on port ");
   Serial.println(HTTP_PORT);
   Serial.println();
+
+  // Initialize the state monitoring
+  lastKnownAcState = isAcOn();
+  lastStateCheckMillis = millis();
 }
 
 void loop() {
   server.handleClient();
   checkSchedules();
+  checkForExternalStateChange();
   delay(20);
 }
 
 //http://192.168.4.199:8123/api/webhook/ac_status_main
 //curl -X PUT "http://192.168.4.120/ha-hook-url?value=http://192.168.4.199:8123/api/webhook/ac_status_main"
+
+//curl -X PUT "http://192.168.4.120/schedule?id=1&hour=7&minute=0&switch=0"
+//curl "http://192.168.4.120/state-journal"
