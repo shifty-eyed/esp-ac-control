@@ -73,13 +73,13 @@ WebServer server(HTTP_PORT);
 
 bool isAcOn() {
   int lowCount = 0;
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 10; i++) {
     if (digitalRead(LED_SENSE_PIN) == LOW) {
       lowCount++;
     }
     delay(5);
   }
-  return (lowCount >= 3);
+  return (lowCount > 6);
 }
 
 // ========== Journal Functions ==========
@@ -654,3 +654,5 @@ void loop() {
 
 //curl -X PUT "http://192.168.4.120/schedule?id=1&hour=7&minute=0&switch=0"
 //curl "http://192.168.4.120/state-journal"
+
+//192.168.4.136

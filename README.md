@@ -4,14 +4,19 @@ This project controls an AC unit via an **ESP32-WROOM-32** board connected to a 
 The ESP32 exposes a **simple HTTP API** over WiFi and electrically **emulates the thermostat’s ON/OFF button** and **reads the thermostat’s LED status**.
 
 - **HTTP API (port 80)**:
-  - **`GET /status`** → returns `"1"` if AC is ON, `"0"` if AC is OFF (based on the thermostat LED).
+  - **`GET /status`** → returns JSON with AC status, current time, schedules, and webhook URL.
   - **`PUT /on`** → emulates a button press only if AC is currently OFF.
   - **`PUT /off`** → emulates a button press only if AC is currently ON.
+  - **`PUT /ha-hook-url?value=<url>`** → configure Home Assistant webhook URL.
   - **`GET /time`** → returns current system time and sync status (JSON).
   - **`PUT /synctime`** → manually trigger NTP time synchronization.
   - **`GET /schedule`** → list all configured schedules (JSON).
   - **`PUT /schedule`** → create or update a schedule.
   - **`DELETE /schedule`** → delete a schedule by ID.
+  - **`GET /journal`** → retrieve activity log with timestamps.
+  - **`DELETE /journal`** → clear activity log.
+  - **`GET /state-journal`** → retrieve AC state change history (CSV format).
+  - **`DELETE /state-journal`** → clear state change history.
 
 The project assumes:
 
@@ -42,40 +47,23 @@ You can later migrate to **ESP-IDF** if you need more control, but Arduino is id
 
 - **ESP32 dev board** (e.g. ESP32-WROOM-32 DevKitC).
 - **Separate USB 5 V supply** powering the ESP32 dev board.
+- **One relay module** (e.g., 1-channel 5V relay module) to emulate the button press.
 - Connection to thermostat:
-  - **Two button wires** (momentary ON/OFF).
-  - **Two LED wires** (indicating ON/OFF state).
-- **One NPN transistor + a few resistors** to emulate the button press.
+  - **Two button wires** (momentary ON/OFF) - connected via relay contacts.
+  - **Two LED wires** (indicating ON/OFF state) - connected to ESP32 GPIO for sensing.
 
-> **Important:** There is **no galvanic isolation** in this design.  
+> **Important:** There is **no galvanic isolation** between ESP32 and thermostat in this design.
+> The relay provides electrical isolation for the button control, but the LED sense line shares a common ground.
 > You accept the risk that sharing ground and interfacing directly may stress the thermostat electronics if its internal design is unusual.
-
----
-
-## Exact Transistor Options
-
-Use **one small-signal NPN BJT** to emulate the button press.  
-Any of the following common parts are suitable:
-
-- **2N2222A** (or PN2222A)
-- **BC547B**
-- **2N3904**
-
-All of these are cheap, widely available, and can handle the tiny current used by a 5 V thermostat button line.
-
-> **Note:** Pinouts vary by package and manufacturer.  
-> Always check the **datasheet** and confirm which pins are **E (Emitter), B (Base), C (Collector)** before wiring.
-
-In this README we refer to generic **E / B / C**, independent of the exact package orientation.
 
 ---
 
 ## ESP32 Pin Assignment
 
-- **Button driver output (to transistor base)**:  
-  - **`GPIO25`** – output
-- **Thermostat LED sense input (digital)**:  
-  - **`GPIO32`** – digital input
+- **Relay control output (ACTIVE LOW)**:
+  - **`GPIO25`** – output (LOW = relay ON = button pressed, HIGH = relay OFF = button released)
+- **Thermostat LED sense input (digital)**:
+  - **`GPIO32`** – digital input (reads ~3V when AC is ON, ~0V when AC is OFF)
 
 These pins avoid boot-strapping issues and are safe, general-purpose choices on ESP32-WROOM-32.
 
@@ -96,9 +84,9 @@ This common ground allows ESP32 GPIO voltages to be correctly referenced to the 
 
 ---
 
-## Wiring – Button Emulation with NPN Transistor
+## Wiring – Button Emulation with Relay Module
 
-Goal: When a specific ESP32 GPIO goes HIGH, the transistor conducts and **shorts the button contacts** (in parallel with the real button), emulating a press.
+Goal: When ESP32 `GPIO25` goes **LOW**, the relay activates and **closes the button contacts** (in parallel with the physical button), emulating a button press.
 
 ### 1. Identify button ground and signal
 
@@ -110,32 +98,43 @@ Goal: When a specific ESP32 GPIO goes HIGH, the transistor conducts and **shorts
    - One button wire at ≈ **0 V** → this is **button ground side**.
    - The other at some positive voltage (around **5 V**) or varying when pressed → **button signal side**.
 
-Keep the physical button connected; we simply add the transistor **in parallel**.
+Keep the physical button connected; we simply add the relay contacts **in parallel**.
 
-### 2. Transistor wiring
+### 2. Relay module wiring
 
-Use any of the specified NPNs (2N2222A, BC547B, 2N3904).
+Use a standard **1-channel 5V relay module** (commonly available with opto-isolated input).
 
-- **Emitter (E)**:
-  - Connect to **thermostat ground**.
-  - Tie to **ESP32 GND** (shared ground).
+**Relay Module Connections:**
 
-- **Collector (C)**:
-  - Connect to the **button signal side** (the non-ground button wire).
+- **VCC** (relay module power):
+  - Connect to **ESP32 5V** (VIN pin on dev board, powered from USB).
 
-- **Base (B)**:
-  - Connect **ESP32 `GPIO25`** to base **through a 4.7 kΩ resistor**.
-  - Add a **100 kΩ resistor from base to ground** (thermostat/ESP shared ground).
+- **GND** (relay module ground):
+  - Connect to **ESP32 GND**.
 
-In summary:
+- **IN** (relay control signal):
+  - Connect to **ESP32 `GPIO25`**.
+  - Most relay modules are **ACTIVE LOW**: when GPIO25 is LOW, relay activates.
 
-- `GPIO25` → **4.7 kΩ** → B
-- B → **100 kΩ** → GND
-- E → GND (ESP32 + thermostat)
-- C → button signal line
+**Relay Contacts (to thermostat button):**
 
-When `GPIO25` is LOW → transistor **off**, button behaves normally.  
-When `GPIO25` is HIGH (3.3 V) → base current ≈ (3.3 − 0.7) / 4.7k ≈ 0.55 mA, transistor **saturates** and **shorts signal to ground**, emulating a press.
+- **COM** (common terminal):
+  - Connect to **button ground side** (the wire that measured ~0V).
+
+- **NO** (normally open terminal):
+  - Connect to **button signal side** (the wire that measured ~5V).
+
+**Shared Ground:**
+
+- Connect **thermostat ground** (LED negative wire) to **ESP32 GND**.
+  - This common ground reference is necessary for the LED sense circuit to work correctly.
+
+### How it works
+
+- When `GPIO25` is **HIGH** → relay is **off**, button contacts are **open**, button behaves normally.
+- When `GPIO25` is **LOW** → relay **activates**, NO contact **closes** to COM, **shorting the button signal to ground**, emulating a button press.
+
+The ESP32 code drives GPIO25 LOW for 300ms to emulate a button press, then returns it HIGH to release.
 
 ---
 
@@ -197,9 +196,35 @@ This section intentionally left open so you can keep the software implementation
 
 Test from a PC on the same network:
 
-- `curl http://<esp-ip>/status`
-- `curl -X PUT http://<esp-ip>/on`
-- `curl -X PUT http://<esp-ip>/off`
+```bash
+# Check AC status (returns JSON with status, time, schedules, webhook URL)
+curl http://<esp-ip>/status
+
+# Turn AC on
+curl -X PUT http://<esp-ip>/on
+
+# Turn AC off
+curl -X PUT http://<esp-ip>/off
+
+# Configure Home Assistant webhook
+curl -X PUT "http://<esp-ip>/ha-hook-url?value=http://<ha-ip>:8123/api/webhook/<webhook-id>"
+
+# Create/update a schedule (turn AC on at 7:30 AM)
+curl -X PUT "http://<esp-ip>/schedule?id=0&hour=7&minute=30&switch=1"
+
+# Delete a schedule
+curl -X DELETE "http://<esp-ip>/schedule?id=0"
+
+# View activity journal
+curl http://<esp-ip>/journal
+
+# View state change history (CSV)
+curl http://<esp-ip>/state-journal
+
+# Clear journals
+curl -X DELETE http://<esp-ip>/journal
+curl -X DELETE http://<esp-ip>/state-journal
+```
 
 ---
 
@@ -313,6 +338,182 @@ Invalid parameters return HTTP 400 with error details in JSON.
   3. If AC needs to change state, a button press is emulated
 - Each schedule triggers only once per minute (prevents duplicate execution)
 - Schedules persist through reboots via NVS storage
+
+---
+
+## Home Assistant Integration
+
+The system includes **webhook integration** to automatically notify Home Assistant whenever the AC state changes.
+
+### Configuring the Webhook
+
+Set the Home Assistant webhook URL using the `/ha-hook-url` endpoint:
+
+```bash
+curl -X PUT "http://<esp-ip>/ha-hook-url?value=http://<ha-ip>:8123/api/webhook/<webhook-id>"
+```
+
+**Example:**
+```bash
+curl -X PUT "http://192.168.4.120/ha-hook-url?value=http://192.168.4.199:8123/api/webhook/ac_status_main"
+```
+
+The webhook URL is stored persistently in NVS and survives ESP32 reboots.
+
+### Webhook Behavior
+
+The ESP32 automatically sends an HTTP POST request to the configured webhook URL whenever the AC state changes:
+
+- **When triggered:**
+  - Manual API control via `/on` or `/off` endpoints
+  - Scheduled events (when a schedule triggers a state change)
+  - External state changes detected (someone uses the physical thermostat button)
+
+- **Payload format (JSON):**
+  ```json
+  {"status":"on"}
+  ```
+  or
+  ```json
+  {"status":"off"}
+  ```
+
+- **HTTP timeout:** 5 seconds
+- **Logging:** All webhook attempts are logged to the activity journal with HTTP response codes
+
+### Checking Current Configuration
+
+The configured webhook URL is included in the `/status` endpoint response:
+
+```bash
+curl http://<esp-ip>/status
+```
+
+Response includes:
+```json
+{
+  "status": "1",
+  "time": "2025-12-29 10:30:00",
+  "schedules": [...],
+  "ha_webhook": "http://192.168.4.199:8123/api/webhook/ac_status_main"
+}
+```
+
+---
+
+## External State Change Detection
+
+The system continuously monitors the AC state to detect **external changes** that occur outside of the ESP32's control, such as someone manually pressing the physical thermostat button.
+
+### How It Works
+
+- **Monitoring interval:** Every 5 seconds
+- **Detection method:** Compares current AC state (read from LED) against the last known state
+- **Actions when external change detected:**
+  1. Updates the internal state tracker
+  2. Logs the state change to the state journal
+  3. Sends a webhook notification to Home Assistant (if configured)
+
+### Use Cases
+
+- **Track manual overrides:** Know when someone uses the physical thermostat instead of the API
+- **Synchronize state:** Keep Home Assistant and other systems synchronized even when the thermostat is manually controlled
+- **Debugging:** Identify unexpected state changes or thermostat behavior
+- **Analytics:** Build a complete history of all AC state changes regardless of source
+
+### Example
+
+If you turn on the AC using `/on`, the system knows it initiated the change. But if someone walks up and presses the physical button, the external state change detection will:
+- Detect the change within 5 seconds
+- Log it: `[2025-12-29 14:32:15] External state change detected`
+- Record the timestamp and new state in the state journal
+- Notify Home Assistant via webhook
+
+This ensures complete visibility into all AC state changes, whether controlled by the API, schedules, or manual button presses.
+
+---
+
+## Activity Logging (Journal System)
+
+The system includes two types of journals for tracking activity and debugging:
+
+### 1. Activity Journal
+
+A **circular buffer** that stores the most recent **200 events** with timestamps.
+
+**What it logs:**
+- Manual API requests (`/on`, `/off`)
+- Schedule triggers and results
+- Webhook POST attempts and HTTP response codes
+- Configuration changes (webhook URL updates)
+- External state changes detected
+
+**Format:**
+```
+[YYYY-MM-DD HH:MM:SS] message
+```
+
+**Example output:**
+```
+[2025-12-29 07:30:00] Schedule #0 triggered: Turn ON
+[2025-12-29 07:30:01] Schedule #0 result: Success from 0 retry
+[2025-12-29 07:30:02] HA webhook: on -> HTTP 200
+[2025-12-29 14:15:23] Manual turn OFF requested
+[2025-12-29 14:15:24] Manual turn OFF result: Already there
+```
+
+**API Endpoints:**
+
+```bash
+# View activity journal
+curl http://<esp-ip>/journal
+
+# Clear activity journal
+curl -X DELETE http://<esp-ip>/journal
+```
+
+### 2. State Journal
+
+A **linear buffer** that stores up to **3000 state change records** for long-term analytics.
+
+**What it logs:**
+- Every AC state transition (ON→OFF or OFF→ON)
+- Includes both API-initiated and externally-detected changes
+
+**Format (CSV):**
+```
+timestamp,state
+```
+
+Where:
+- `timestamp` = Unix timestamp (seconds since epoch)
+- `state` = `1` (AC on) or `0` (AC off)
+
+**Example output:**
+```
+1735473000,1
+1735480200,0
+1735494600,1
+```
+
+**API Endpoints:**
+
+```bash
+# View state journal (CSV format)
+curl http://<esp-ip>/state-journal
+
+# Clear state journal
+curl -X DELETE http://<esp-ip>/state-journal
+```
+
+### Use Cases
+
+- **Debugging:** Trace exactly what happened and when
+- **Analytics:** Export state journal CSV for analysis (uptime statistics, usage patterns, etc.)
+- **Monitoring:** Check recent activity via journal endpoint
+- **Troubleshooting:** Identify why a schedule didn't trigger or why a state change failed
+
+The activity journal is useful for real-time debugging with human-readable messages, while the state journal provides raw data perfect for importing into spreadsheets or data analysis tools.
 
 ---
 
