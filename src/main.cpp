@@ -42,7 +42,7 @@ String haWebhookUrl = "";
 
 bool lastKnownAcState = false;
 unsigned long lastStateCheckMillis = 0;
-const unsigned long STATE_CHECK_INTERVAL = 500;
+const unsigned long STATE_CHECK_INTERVAL = 5000;
 
 // Journal (in-memory log)
 const int JOURNAL_MAX_LINES = 200;
@@ -72,13 +72,14 @@ const int BUTTON_PRESS_DURATION = 300;
 WebServer server(HTTP_PORT);
 
 bool isAcOn() {
+  int lowCount = 0;
   for (int i = 0; i < 5; i++) {
     if (digitalRead(LED_SENSE_PIN) == LOW) {
-      return true;
+      lowCount++;
     }
     delay(5);
   }
-  return false;
+  return (lowCount >= 3);
 }
 
 // ========== Journal Functions ==========
@@ -325,10 +326,10 @@ void checkForExternalStateChange() {
     bool currentAcState = isAcOn();
 
     if (currentAcState != lastKnownAcState) {
-      lastKnownAcState = currentAcState;
-      addToStateJournal(currentAcState);
+          lastKnownAcState = currentAcState;
+          addToStateJournal(currentAcState);
 
-      sendHomeAssistantWebhook(currentAcState);
+          sendHomeAssistantWebhook(currentAcState);
     }
   }
 }
