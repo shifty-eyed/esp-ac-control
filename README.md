@@ -21,7 +21,7 @@ The ESP32 exposes a **simple HTTP API** over WiFi and electrically **emulates th
 The project assumes:
 
 - Thermostat **button voltage: 5 V DC**.
-- Thermostat **LED sense node: ~0 V off, ~3 V on (DC, measured to thermostat ground)**.
+- Thermostat **LED sense node: ~0 V on, ~3 V off (DC, measured to thermostat ground)**.
 - ESP32 is powered from a **separate 5 V USB power supply**, but **shares ground** with the thermostat electronics.
 
 ---
@@ -139,41 +139,14 @@ The ESP32 code drives GPIO25 LOW for 300ms to emulate a button press, then retur
 ---
 
 ## Wiring – LED Status to ESP32 (Digital Input)
-
-You are tapping the LED node which measures:
-
-- **~0 V when OFF**
-- **~3 V when ON**, relative to thermostat ground
-
-This is below 3.3 V, so we can safely feed it into an ESP32 **digital input** with a small series resistor.
+TBD
 
 ### LED sense wiring (digital)
-
-- Choose **`GPIO32`** as digital input.
-- Connections:
-  - Thermostat **LED_SENSE node** (~3 V when ON, 0 V when OFF) → **10 kΩ resistor** → **`GPIO32`**.
-  - Thermostat **GND** → **ESP32 GND** (shared).
-  - *Optional:* Place a **100 nF capacitor** from `GPIO32` to GND (near the ESP32) to reduce noise.
+TBD
 
 The 10 kΩ resistor limits current and provides protection for the GPIO pin.
 
-### Software – digital read
 
-In Arduino-style code:
-
-```cpp
-const int LED_SENSE_PIN = 32;  // digital input
-
-void setup() {
-  pinMode(LED_SENSE_PIN, INPUT);
-}
-
-bool isAcOn() {
-  return digitalRead(LED_SENSE_PIN) == HIGH;  // HIGH ≈ LED ON (3 V)
-}
-```
-
----
 
 ## Software Sketch Outline (Arduino + PlatformIO)
 

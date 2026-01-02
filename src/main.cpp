@@ -21,6 +21,8 @@
 #include <esp_sntp.h>
 #include <Preferences.h>
 
+#include "LedSense.h"
+
 // Time configuration
 const char* NTP_SERVER = "pool.ntp.org";
 const long  GMT_OFFSET_SEC = -5 * 3600;      // GMT-5 (Eastern US)
@@ -71,15 +73,11 @@ const int BUTTON_PRESS_DURATION = 300;
 
 WebServer server(HTTP_PORT);
 
-bool isAcOn() {
-  int lowCount = 0;
-  for (int i = 0; i < 10; i++) {
-    if (digitalRead(LED_SENSE_PIN) == LOW) {
-      lowCount++;
-    }
-    delay(5);
-  }
-  return (lowCount > 6);
+// LED sense is encapsulated to keep signal filtering/polarity isolated.
+static LedSense ledSence;
+
+static inline bool isAcOn() {
+  return ledSence.isOn();
 }
 
 // ========== Journal Functions ==========
@@ -135,7 +133,6 @@ void initGPIO() {
   pinMode(BUTTON_PIN, OUTPUT);
   digitalWrite(BUTTON_PIN, LOW); 
   pinMode(LED_SENSE_PIN, INPUT_PULLUP);
-  
 }
 
 void sendHomeAssistantWebhook(bool acState) {
@@ -175,11 +172,11 @@ String setOn(bool desiredState) {
     }
 
     digitalWrite(BUTTON_PIN, HIGH);
-    delay(BUTTON_PRESS_DURATION);
+    ledSence.wait(BUTTON_PRESS_DURATION);
     digitalWrite(BUTTON_PIN, LOW);
-    delay(500);
+    ledSence.wait(500);
     if (isAcOn() != desiredState) {
-      delay(1500);
+      ledSence.wait(1500);
     }
   }
 
@@ -589,6 +586,7 @@ void setup() {
   delay(100);
   
   initGPIO();
+  ledSence.begin(LED_SENSE_PIN);
 
   loadSchedulesFromNVS();
   loadWebhookUrlFromNVS();
@@ -643,6 +641,7 @@ void setup() {
 }
 
 void loop() {
+  ledSence.update();
   server.handleClient();
   checkSchedules();
   checkForExternalStateChange();
@@ -651,8 +650,8 @@ void loop() {
 
 //http://192.168.4.199:8123/api/webhook/ac_status_main
 //curl -X PUT "http://192.168.4.120/ha-hook-url?value=http://192.168.4.199:8123/api/webhook/ac_status_main"
-
 //curl -X PUT "http://192.168.4.120/schedule?id=1&hour=7&minute=0&switch=0"
 //curl "http://192.168.4.120/state-journal"
 
 //192.168.4.136
+//curl -X PUT "http://192.168.4.136/ha-hook-url?value=http://192.168.4.199:8123/api/webhook/ac_status_lower"
