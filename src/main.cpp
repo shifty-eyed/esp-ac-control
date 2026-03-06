@@ -46,6 +46,9 @@ bool lastKnownAcState = false;
 unsigned long lastStateCheckMillis = 0;
 const unsigned long STATE_CHECK_INTERVAL = 5000;
 
+unsigned long lastWiFiCheckMillis = 0;
+const unsigned long WIFI_CHECK_INTERVAL = 30000;
+
 // Journal (in-memory log)
 const int JOURNAL_MAX_LINES = 200;
 String journal[JOURNAL_MAX_LINES];
@@ -137,6 +140,10 @@ void initGPIO() {
 
 void sendHomeAssistantWebhook(bool acState) {
   if (haWebhookUrl == "" || haWebhookUrl.length() == 0) {
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    addToJournal("HA webhook skipped: WiFi not connected");
     return;
   }
 
@@ -312,6 +319,17 @@ void manualSyncTime() {
 bool isScheduleValid(int id) {
   if (id < 0 || id >= 16) return false;
   return schedules[id].valid;
+}
+
+void checkWiFiConnection() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastWiFiCheckMillis < WIFI_CHECK_INTERVAL) return;
+  lastWiFiCheckMillis = currentMillis;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[WiFi] Disconnected - reconnecting...");
+    WiFi.reconnect();
+  }
 }
 
 void checkForExternalStateChange() {
@@ -592,27 +610,27 @@ void setup() {
   loadWebhookUrlFromNVS();
   
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  
+
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
     attempts++;
-    
+
     if (attempts > 60) {  // 30 seconds timeout
       Serial.println();
-      Serial.println("[WiFi] ERROR: Connection timeout!");
-      Serial.println("[WiFi] Please check credentials and restart.");
-      while (true) {
-        delay(1000);  // Halt here
-      }
+      Serial.println("[WiFi] Initial connect timeout - will retry in background.");
+      break;
     }
   }
-  
-  Serial.println("[WiFi] Connected!");
-  Serial.print("[WiFi] IP address: ");
-  Serial.println(WiFi.localIP());
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("[WiFi] Connected!");
+    Serial.print("[WiFi] IP address: ");
+    Serial.println(WiFi.localIP());
+  }
   
   initTime();
   
@@ -645,6 +663,7 @@ void loop() {
   server.handleClient();
   checkSchedules();
   checkForExternalStateChange();
+  checkWiFiConnection();
   delay(20);
 }
 
